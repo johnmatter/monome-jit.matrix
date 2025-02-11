@@ -1,0 +1,17 @@
+1, transfer.saw;
+2, transfer.sine;
+3, noise.cell;
+4, noise.checker;
+5, noise.distorted;
+6, noise.gradient;
+7, noise.simplex;
+8, noise.voronoi;
+9, noise.value.cubicspline;
+10, noise.value.convolution;
+11, noise.sparse.convolution;
+12, fractal.mono;
+13, fractal.hetero;
+14, fractal.multi;
+15, fractal.multi.hybrid;
+16, fractal.multi.ridged;
+17, fractal.turbulence;
