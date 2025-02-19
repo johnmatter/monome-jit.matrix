@@ -492,7 +492,7 @@ class Simulation {
             new Vector3D(options.Ex || 0, options.Ey || 0, options.Ez || 0),
             new Vector3D(options.Bx || 0, options.By || 0, options.Bz || 0)
         );
-        this.constraint = new ConstraintForce(this.constraint);
+        this.constraintForce = new ConstraintForce(this.constraint);
         
         this.limits = {
             min: options.min || -Infinity,
@@ -516,8 +516,8 @@ class Simulation {
         
         // Update and add constraint force if particle is constrained
         if (this.particle instanceof ConstrainedParticle) {
-            this.constraint.update(this.particle);
-            const totalForce = externalForce.add(this.constraint);
+            this.constraintForce.update(this.particle);
+            const totalForce = externalForce.add(this.constraintForce);
             this.particle.applyForce(totalForce, this.dt);
         } else {
             this.particle.applyForce(externalForce, this.dt);
@@ -551,8 +551,9 @@ class Simulation {
         };
     }
 
-    applyImpulse(magnitude) {
-        const impulseForce = new Force(magnitude);
+    applyImpulse(x, y = 0, z = 0) {
+        // Create impulse force vector
+        const impulseForce = new Force(x, y, z);
         this.particle.applyForce(impulseForce, this.dt);
     }
 
@@ -646,6 +647,15 @@ class Simulation {
                 Math.sin(a*t) * (2 + Math.cos(b*t)),
                 Math.sin(b*t)
             );
+        },
+
+        parabola: (a = 0.1) => {
+            // Parabolic path y = ax²
+            return t => new Vector3D(
+                t,
+                a * t * t,
+                0
+            );
         }
     };
 }
@@ -656,29 +666,24 @@ let sim = null;  // Initialize to null explicitly
 // Initialize simulation with default parameters
 function init(options = {}) {
     sim = new Simulation({
-        // No constraint for free particle
-        constraintType: null,
-        // Charged particle (e.g. electron)
+        // Wire constraint
+        constraintType: "wire",
+        // Neutral particle with unit mass
         mass: options.mass || 1.0,
-        charge: options.charge || 1.0,  // Non-zero charge
-        // No friction in free space
-        friction: options.friction || 0.0,
-        // Zero gravity to observe pure magnetic effects
-        g: options.g || 0,
-        // No electric field
-        Ex: options.Ex || 0,
-        Ey: options.Ey || 0,
-        Ez: options.Ez || 0,
-        // Magnetic field along z-axis
-        Bx: options.Bx || 0,
-        By: options.By || 0,
-        Bz: options.Bz || 1.0  // B field in z direction
+        charge: 0,
+        // Small friction to make motion more realistic
+        friction: options.friction || 0.1,
+        // Standard gravity
+        g: options.g || -9.81,
+        // No electromagnetic fields
+        Ex: 0, Ey: 0, Ez: 0,
+        Bx: 0, By: 0, Bz: 0
     });
+
+    // Set up parabolic wire
+    sim.setWire(Simulation.WireTrajectories.parabola(0.2));  // y = 0.2x²
     
-    // Give initial velocity in x-y plane plus z component for helical motion
-    sim.particle.velocity = new Vector3D(1.0, 1.0, 0.5);
-    
-    post("Particle simulation initialized: charged particle in magnetic field\n");
+    post("Particle simulation initialized: neutral particle on parabolic wire under gravity\n");
     return sim;
 }
 
@@ -724,8 +729,10 @@ function anything() {
                 break;
 
             case "impulse":
-                if (args.length > 0) {
-                    sim.applyImpulse(args[0]);
+                if (args.length >= 3) {
+                    sim.applyImpulse(args[0], args[1], args[2]);
+                } else if (args.length >= 1) {
+                    sim.applyImpulse(args[0]);  // Only x component if single value
                 }
                 break;
             
