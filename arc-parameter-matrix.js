@@ -14,14 +14,28 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     this.ledsPerRing = 64;
 
     // Initialize parameter storage
-    // Map of parameter name -> Map of channel -> {values}
-    this.parameters = new Map(); 
+    this.parameters = new Map(); // name -> Map of channel -> {values}
     this.encoderAssignments = new Array(this.numRings).fill(null); // encoder -> {name, channel}
 
     // Create persistent LED buffers for each ring
     this.ledBuffers = Array.from({ length: this.numRings }, 
       () => new Array(this.ledsPerRing).fill(0)
     );
+
+    // Sprite sheet configuration
+    this.spriteSheet = null;  // Will hold the sprite sheet matrix
+    this.spriteSheetName = null;  // Will hold the name of the sprite sheet matrix
+    this.encoderSprites = new Array(this.numRings).fill(0);  // Sprite index for each encoder
+    this.encoderRotations = new Array(this.numRings).fill(0);  // Current rotation for each encoder
+    
+    // Encoder configuration
+    this.encoderConfigs = Array.from({ length: this.numRings }, () => ({
+      isContinuous: true,  // true = continuous, false = bounded
+      minAngle: -120,      // minimum angle for bounded mode (degrees)
+      maxAngle: 120,       // maximum angle for bounded mode (degrees)
+      sensitivity: 1.0,    // ticks per delta unit
+      tickAccumulator: 0   // accumulates partial ticks
+    }));
 
     // Create our matrix to store all parameter values
     this.maxParameters = 32; // Allow up to 32 parameters
@@ -30,6 +44,273 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     if (this.debug) {
       post("ArcParameterMatrix initialized\n");
     }
+  }
+
+  // Set the sprite sheet matrix
+  setSpriteSheet(matrixName) {
+    try {
+      if (!this.spriteSheet) {
+        this.spriteSheet = new JitterMatrix(1, "float32", this.ledsPerRing, 32);
+      }
+      // Store the matrix name for later reloading
+      this.spriteSheetName = matrixName;
+      this.spriteSheet.frommatrix(matrixName);
+      
+      if (this.debug) {
+        post(`Sprite sheet set from matrix: ${matrixName}\n`);
+      }
+      
+      // Redraw all encoders with new sprites
+      this.redraw();
+    } catch (error) {
+      post(`Error setting sprite sheet: ${error.message}\n`);
+    }
+  }
+
+  // Set sprite for an encoder
+  setEncoderSprite(encoderNum, spriteIndex) {
+    if (encoderNum < 0 || encoderNum >= this.numRings) {
+      post(`Invalid encoder number: ${encoderNum}\n`);
+      return;
+    }
+
+    if (!this.spriteSheet) {
+      post("No sprite sheet loaded\n");
+      return;
+    }
+
+    const numSprites = this.spriteSheet.dim[1];  // Assuming sprites are rows
+    if (spriteIndex < 0 || spriteIndex >= numSprites) {
+      post(`Invalid sprite index: ${spriteIndex}. Must be between 0 and ${numSprites - 1}\n`);
+      return;
+    }
+
+    this.encoderSprites[encoderNum] = spriteIndex;
+    this.redraw([encoderNum]);
+  }
+
+  // Configure an encoder's behavior
+  setEncoderConfig(encoderNum, config) {
+    if (encoderNum < 0 || encoderNum >= this.numRings) {
+      post(`Invalid encoder number: ${encoderNum}\n`);
+      return;
+    }
+
+    const currentConfig = this.encoderConfigs[encoderNum];
+    Object.assign(currentConfig, config);
+
+    // Clamp rotation if bounded
+    if (!currentConfig.isContinuous) {
+      const minTicks = Math.floor(currentConfig.minAngle * this.ledsPerRing / 360);
+      const maxTicks = Math.floor(currentConfig.maxAngle * this.ledsPerRing / 360);
+      this.encoderRotations[encoderNum] = Math.max(minTicks, Math.min(maxTicks, this.encoderRotations[encoderNum]));
+    }
+
+    this.redraw([encoderNum]);
+  }
+
+  // Handle encoder delta messages with sprite rotation
+  handleDelta(encoderNum, delta) {
+    const config = this.encoderConfigs[encoderNum];
+    if (!config) return;
+
+    // Accumulate delta and convert to ticks
+    // Positive delta = clockwise = increasing value
+    config.tickAccumulator += delta * config.sensitivity;
+    const ticks = Math.floor(config.tickAccumulator);
+    config.tickAccumulator -= ticks;
+
+    if (ticks === 0) return;
+
+    // Update rotation
+    if (config.isContinuous) {
+      this.encoderRotations[encoderNum] = (this.encoderRotations[encoderNum] + ticks) % this.ledsPerRing;
+      if (this.encoderRotations[encoderNum] < 0) {
+        this.encoderRotations[encoderNum] += this.ledsPerRing;
+      }
+    } else {
+      const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
+      const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
+      // Clamp the rotation to bounds
+      const newRotation = Math.max(minTicks, Math.min(maxTicks, 
+        this.encoderRotations[encoderNum] + ticks));
+      
+      // Only update and redraw if the rotation actually changed
+      if (newRotation !== this.encoderRotations[encoderNum]) {
+        this.encoderRotations[encoderNum] = newRotation;
+      } else {
+        // If we hit the bounds, don't continue processing
+        return;
+      }
+    }
+
+    // Update parameter value if assigned
+    const assignment = this.encoderAssignments[encoderNum];
+    if (assignment) {
+      const { name: paramName, channel } = assignment;
+      const paramChannels = this.parameters.get(paramName);
+      if (paramChannels && paramChannels.has(channel)) {
+        const param = paramChannels.get(channel);
+        // Map rotation to parameter value
+        if (config.isContinuous) {
+          const normalizedValue = (this.encoderRotations[encoderNum] % this.ledsPerRing) / this.ledsPerRing;
+          param.values.fill(normalizedValue);
+        } else {
+          const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
+          const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
+          const normalizedValue = Math.max(0, Math.min(1, 
+            (this.encoderRotations[encoderNum] - minTicks) / (maxTicks - minTicks)
+          ));
+          param.values.fill(normalizedValue);
+        }
+        this.updateMatrixRow(paramName, channel);
+      }
+    }
+
+    this.redraw([encoderNum]);
+  }
+
+  // Redraw with sprite support
+  redraw(rings = null) {
+    try {
+      if (!this.spriteSheet) return;
+
+      // If no rings specified, update all rings
+      const ringsToUpdate = rings || Array.from({ length: this.numRings }, (_, i) => i);
+
+      // First update the LED displays
+      for (const ringIndex of ringsToUpdate) {
+        const buffer = this.ledBuffers[ringIndex];
+        const spriteIndex = this.encoderSprites[ringIndex];
+        const rotation = this.encoderRotations[ringIndex];
+
+        // Copy sprite data with rotation
+        for (let led = 0; led < this.ledsPerRing; led++) {
+          // Negate rotation to make LEDs rotate in the same direction as encoder
+          const srcLed = (led - rotation + this.ledsPerRing) % this.ledsPerRing;
+          // Add safety check for sprite sheet access
+          let value = 0;
+          try {
+            const cell = this.spriteSheet.getcell(srcLed, spriteIndex);
+            if (cell && cell[0] !== undefined) {
+              value = cell[0];
+            }
+          } catch (error) {
+            if (this.debug) {
+              post(`Error getting sprite cell: ${error.message}\n`);
+            }
+          }
+          buffer[led] = Math.floor(value * 15);  // Scale to 0-15 brightness
+        }
+
+        // Send OSC message to update this ring
+        outlet(0, "/monome/ring/map", ringIndex, ...buffer);
+
+        if (this.debug) {
+          post(`Ring ${ringIndex} update: sprite=${spriteIndex}, rotation=${rotation}\n`);
+        }
+      }
+
+      // Then output all parameter states
+      outlet(1, "clear");
+      for (let i = 0; i < this.numRings; i++) {
+        const assignment = this.encoderAssignments[i];
+        if (assignment) {
+          const { name: paramName, channel } = assignment;
+          const paramChannels = this.parameters.get(paramName);
+          if (paramChannels && paramChannels.has(channel)) {
+            const param = paramChannels.get(channel);
+            const avgValue = param.values.reduce((a, b) => a + b, 0) / this.ledsPerRing;
+            outlet(1, i, paramName, channel, avgValue);
+          }
+        }
+      }
+    } catch (error) {
+      post(`Error in redraw: ${error.message}\n`);
+    }
+  }
+
+
+  // Handle incoming messages
+  handleMessage(command, args) {
+    // First try parent class message handling
+    if (super.handleMessage(command, args)) {
+      return true;
+    }
+
+    switch (command) {
+      case "setspritesheet":
+        if (args.length >= 2) {
+          this.setSpriteSheet(args[1]);
+          return true;
+        }
+        break;
+
+      case "setencodersprite":
+        if (args.length >= 3) {
+          this.setEncoderSprite(args[1], args[2]);
+          return true;
+        }
+        break;
+
+      case "setencoder":
+        if (args.length >= 4) {
+          this.setEncoder(args[1], args[2], args[3]);
+          return true;
+        }
+        break;
+
+      case "setparameter":
+        if (args.length >= 3) {
+          this.setParameter(args[1], args[2]);
+          return true;
+        }
+        break;
+
+      case "setencoderconfig":
+        if (args.length >= 3) {
+          const encoderNum = args[1];
+          const config = {};
+          if (args[2] === "continuous") {
+            config.isContinuous = true;
+          } else if (args[2] === "bounded") {
+            config.isContinuous = false;
+            if (args.length >= 5) {
+              config.minAngle = args[3];
+              config.maxAngle = args[4];
+            }
+          }
+          if (args.length >= 6) {
+            config.sensitivity = args[5];
+          }
+          this.setEncoderConfig(encoderNum, config);
+          return true;
+        }
+        break;
+
+      case "/monome/enc/delta":
+        if (args.length >= 3) {
+          this.handleDelta(args[1], args[2]);
+          return true;
+        }
+        break;
+
+      case "/monome/enc/key":
+        // Currently just ignoring key messages
+        return true;
+
+      case "redraw":
+        if (args.length > 1) {
+          this.redraw(args.slice(1));
+        } else {
+          this.redraw();
+        }
+        return true;
+
+      default:
+        return false;
+    }
+    return false;
   }
 
   // Add or update a parameter
@@ -67,82 +348,6 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     }
   }
 
-  // Send all necessary messages for the current state
-  redraw(rings = null) {
-    try {
-      // If no rings specified, update all rings
-      const ringsToUpdate = rings || Array.from({ length: this.numRings }, (_, i) => i);
-
-      // First update the LED displays
-      for (const ringIndex of ringsToUpdate) {
-        const assignment = this.encoderAssignments[ringIndex];
-        if (!assignment) continue;
-
-        const { name: paramName, channel } = assignment;
-        const paramChannels = this.parameters.get(paramName);
-        if (!paramChannels || !paramChannels.has(channel)) continue;
-
-        const param = paramChannels.get(channel);
-        const buffer = this.ledBuffers[ringIndex];
-
-        // Map parameter values to LED brightness
-        for (let led = 0; led < this.ledsPerRing; led++) {
-          buffer[led] = Math.floor(param.values[led] * 15);
-        }
-
-        // Send OSC message to update this ring
-        outlet(0, "/monome/ring/map", ringIndex, ...buffer);
-
-        if (this.debug) {
-          post(`Ring ${ringIndex} update: ${buffer.join(" ")}\n`);
-        }
-      }
-
-      // Then output all parameter states
-      outlet(1, "clear");
-      for (let i = 0; i < this.numRings; i++) {
-        const assignment = this.encoderAssignments[i];
-        if (assignment) {
-          const { name: paramName, channel } = assignment;
-          const paramChannels = this.parameters.get(paramName);
-          if (paramChannels && paramChannels.has(channel)) {
-            const param = paramChannels.get(channel);
-            const avgValue = param.values.reduce((a, b) => a + b, 0) / this.ledsPerRing;
-            outlet(1, i, paramName, channel, avgValue);
-          }
-        }
-      }
-    } catch (error) {
-      post(`Error sending messages: ${error.message}\n`);
-    }
-  }
-
-  // Handle encoder delta messages
-  handleDelta(encoderNum, delta) {
-    const assignment = this.encoderAssignments[encoderNum];
-    if (!assignment) return;
-
-    const { name: paramName, channel } = assignment;
-    const paramChannels = this.parameters.get(paramName);
-    if (!paramChannels || !paramChannels.has(channel)) return;
-
-    const param = paramChannels.get(channel);
-
-    // Update parameter values based on delta
-    const scaledDelta = delta * 0.01; // Scale delta to small changes
-    for (let i = 0; i < this.ledsPerRing; i++) {
-      param.values[i] = Math.max(0, Math.min(1, param.values[i] + scaledDelta));
-    }
-
-    // Update matrix
-    this.updateMatrixRow(paramName, channel);
-    this.redraw();
-
-    if (this.debug) {
-      post(`Parameter ${paramName} (channel ${channel}) updated\n`);
-    }
-  }
-
   // Assign parameter to encoder
   setEncoder(encoderNum, channel, paramName) {
     if (encoderNum < 0 || encoderNum >= this.numRings) {
@@ -162,58 +367,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     }
 
     this.encoderAssignments[encoderNum] = { name: paramName, channel };
-    
-    // Send all necessary messages
     this.redraw([encoderNum]);
-  }
-
-  // Handle incoming messages
-  handleMessage(command, args) {
-    // First try parent class message handling
-    if (super.handleMessage(command, args)) {
-      return true;
-    }
-
-    switch (command) {
-      case "setparameter":
-        if (args.length >= 3) {
-          this.setParameter(args[1], args[2]);
-          return true;
-        }
-        break;
-
-      case "setencoder":
-        if (args.length >= 4) {
-          this.setEncoder(args[1], args[2], args[3]);
-          return true;
-        }
-        break;
-
-      case "/monome/enc/delta":
-        if (args.length >= 3) {
-          this.handleDelta(args[1], args[2]);
-          return true;
-        }
-        break;
-
-      case "/monome/enc/key":
-        // Currently just ignoring key messages
-        return true;
-
-      case "redraw":
-        if (args.length > 1) {
-          // If arguments provided, treat them as ring numbers to redraw
-          this.redraw(args.slice(1));
-        } else {
-          // No arguments, redraw all
-          this.redraw();
-        }
-        return true;
-
-      default:
-        return false;
-    }
-    return false;
   }
 }
 
