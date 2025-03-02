@@ -27,7 +27,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     this.spriteSheet = null;  // Will hold the sprite sheet matrix
     this.spriteSheetName = null;  // Will hold the name of the sprite sheet matrix
     
-    // Track rotation position for each encoder
+    // Track rotation position for each encoder as normalized values (0.0-1.0)
     this.encoderRotations = new Array(this.numRings).fill(0);
     
     // Default configuration for parameters
@@ -181,26 +181,25 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     const param = paramChannels.get(channel);
     const config = param.config;
     
-    // Accumulate delta and convert to ticks
-    // Positive delta = clockwise = increasing value
-    config.tickAccumulator += delta * config.sensitivity;
-    const ticks = Math.floor(config.tickAccumulator);
-    config.tickAccumulator -= ticks;
+    // Calculate normalized delta directly with sensitivity
+    // This gives full floating-point precision without quantization
+    const normalizedDelta = (delta * config.sensitivity) / this.ledsPerRing;
+    
+    // Skip processing if the delta is too small to make any change
+    if (normalizedDelta === 0) return;
 
-    if (ticks === 0) return;
-
-    // Update rotation of this encoder
+    // Update rotation of this encoder as a normalized value (0.0-1.0)
     if (config.isContinuous) {
-      this.encoderRotations[encoderNum] = (this.encoderRotations[encoderNum] + ticks) % this.ledsPerRing;
-      if (this.encoderRotations[encoderNum] < 0) {
-        this.encoderRotations[encoderNum] += this.ledsPerRing;
-      }
+      // For continuous mode, just wrap around in 0.0-1.0 range
+      this.encoderRotations[encoderNum] = ((this.encoderRotations[encoderNum] + normalizedDelta) % 1 + 1) % 1;
     } else {
-      const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
-      const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
-      // Clamp the rotation to bounds
-      const newRotation = Math.max(minTicks, Math.min(maxTicks, 
-        this.encoderRotations[encoderNum] + ticks));
+      // For bounded mode, calculate min/max in normalized space and clamp
+      const minNormalized = config.minAngle / 360 + 0.5; // Convert angle to 0.0-1.0 range
+      const maxNormalized = config.maxAngle / 360 + 0.5; // Convert angle to 0.0-1.0 range
+      
+      // Clamp the rotation to bounds in normalized space
+      const newRotation = Math.max(minNormalized, Math.min(maxNormalized, 
+        this.encoderRotations[encoderNum] + normalizedDelta));
       
       // Only update and redraw if the rotation actually changed
       if (newRotation !== this.encoderRotations[encoderNum]) {
@@ -211,32 +210,36 @@ class ArcParameterMatrix extends MonomeMatrixUI {
       }
     }
 
-    // Update parameter value
+    // Update parameter value directly from encoder rotation
     if (config.isContinuous) {
-      let normalizedValue = (this.encoderRotations[encoderNum] % this.ledsPerRing) / this.ledsPerRing;
+      // In continuous mode, the normalized rotation is the parameter value
+      const normalizedValue = this.encoderRotations[encoderNum];
+      
       // Check for NaN and fix if needed
       if (isNaN(normalizedValue)) {
         if (this.debug) {
           post(`Warning: NaN detected in normalizedValue (continuous mode), defaulting to 0\n`);
         }
-        normalizedValue = 0;
+        param.values.fill(0);
+      } else {
+        param.values.fill(normalizedValue);
       }
-      param.values.fill(normalizedValue);
     } else {
-      const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
-      const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
+      // In bounded mode, map from bounded range to 0.0-1.0
+      const minNormalized = config.minAngle / 360 + 0.5;
+      const maxNormalized = config.maxAngle / 360 + 0.5;
       
       // Prevent division by zero
-      const range = maxTicks - minTicks;
+      const range = maxNormalized - minNormalized;
       let normalizedValue = 0;
       
       if (range <= 0) {
         if (this.debug) {
-          post(`Warning: Invalid range for bounded encoder (${minTicks} to ${maxTicks}), defaulting to 0\n`);
+          post(`Warning: Invalid range for bounded encoder (${minNormalized} to ${maxNormalized}), defaulting to 0\n`);
         }
       } else {
         normalizedValue = Math.max(0, Math.min(1, 
-          (this.encoderRotations[encoderNum] - minTicks) / range
+          (this.encoderRotations[encoderNum] - minNormalized) / range
         ));
         
         // Check for NaN
@@ -264,17 +267,8 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     
     // Update rotation value for all other affected encoders
     if (affectedEncoders.length > 0) {
-      const currentValue = param.values[0]; // All values should be the same
-      
       for (const otherEncoderNum of affectedEncoders) {
-        if (config.isContinuous) {
-          this.encoderRotations[otherEncoderNum] = Math.floor(currentValue * this.ledsPerRing) % this.ledsPerRing;
-        } else {
-          const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
-          const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
-          const rangeTicks = maxTicks - minTicks;
-          this.encoderRotations[otherEncoderNum] = minTicks + Math.floor(currentValue * rangeTicks);
-        }
+        this.encoderRotations[otherEncoderNum] = this.encoderRotations[encoderNum];
       }
       
       // Redraw all affected encoders plus the original one
@@ -315,12 +309,16 @@ class ArcParameterMatrix extends MonomeMatrixUI {
         
         const param = paramChannels.get(channel);
         const spriteIndex = param.spriteIndex || 0; // Default to 0 if undefined
-        const rotation = this.encoderRotations[ringIndex] || 0; // Default to 0 if undefined
+        
+        // Convert normalized rotation (0.0-1.0) to LED position (0-63)
+        const normalizedRotation = this.encoderRotations[ringIndex] || 0;
+        const rotationTicks = Math.floor(normalizedRotation * this.ledsPerRing);
 
         // Copy sprite data with rotation
         for (let led = 0; led < this.ledsPerRing; led++) {
           // Negate rotation to make LEDs rotate in the same direction as encoder
-          const srcLed = (led - rotation + this.ledsPerRing) % this.ledsPerRing;
+          const srcLed = ((led - rotationTicks) % this.ledsPerRing + this.ledsPerRing) % this.ledsPerRing;
+          
           // Add safety check for sprite sheet access
           let value = 0;
           try {
@@ -355,7 +353,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
         outlet(0, "/monome/ring/map", ringIndex, ...buffer);
 
         if (this.debug) {
-          post(`Ring ${ringIndex} update: sprite=${spriteIndex}, rotation=${rotation}\n`);
+          post(`Ring ${ringIndex} update: sprite=${spriteIndex}, rotation=${normalizedRotation}\n`);
         }
       }
 
@@ -546,19 +544,19 @@ class ArcParameterMatrix extends MonomeMatrixUI {
     const newConfig = newParam.config;
     const currentValue = newParam.values[0]; // Assuming uniform values
     
-    // Calculate rotation based on the parameter's current value
-    let newRotation = 0;
+    // Set rotation directly from parameter value for continuous mode
     if (newConfig.isContinuous) {
-      newRotation = Math.floor(currentValue * this.ledsPerRing) % this.ledsPerRing;
+      // For continuous mode, rotation equals the parameter value (0.0-1.0)
+      this.encoderRotations[encoderNum] = currentValue;
     } else {
-      const minTicks = Math.floor(newConfig.minAngle * this.ledsPerRing / 360);
-      const maxTicks = Math.floor(newConfig.maxAngle * this.ledsPerRing / 360);
-      const rangeTicks = maxTicks - minTicks;
-      newRotation = minTicks + Math.floor(currentValue * rangeTicks);
+      // For bounded mode, map parameter (0.0-1.0) to the bounded range
+      const minNormalized = newConfig.minAngle / 360 + 0.5;
+      const maxNormalized = newConfig.maxAngle / 360 + 0.5;
+      const range = maxNormalized - minNormalized;
+      
+      // Map from 0-1 parameter space to min-max normalized rotation space
+      this.encoderRotations[encoderNum] = minNormalized + (currentValue * range);
     }
-    
-    // Update the encoder rotation to match the parameter value
-    this.encoderRotations[encoderNum] = newRotation;
     
     // Update the encoder assignment
     this.encoderAssignments[encoderNum] = { name: paramName, channel };
@@ -573,7 +571,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
       .filter(index => index !== null);
       
     for (const otherEncoderNum of affectedEncoders) {
-      this.encoderRotations[otherEncoderNum] = newRotation;
+      this.encoderRotations[otherEncoderNum] = this.encoderRotations[encoderNum];
     }
     
     // Redraw this encoder and any others affected

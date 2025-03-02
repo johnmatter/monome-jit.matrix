@@ -379,8 +379,8 @@
 					"numinlets" : 1,
 					"numoutlets" : 1,
 					"outlettype" : [ "" ],
-					"patching_rect" : [ 828.0, 737.0, 159.0, 22.0 ],
-					"text" : "append bounded 45 315 0.5"
+					"patching_rect" : [ 828.0, 737.0, 169.0, 22.0 ],
+					"text" : "append bounded -135 135 0.1"
 				}
 
 			}
@@ -462,6 +462,7 @@
 						"classnamespace" : "box",
 						"rect" : [ 59.0, 81.0, 1000.0, 780.0 ],
 						"gridsize" : [ 15.0, 15.0 ],
+						"visible" : 1,
 						"boxes" : [ 							{
 								"box" : 								{
 									"id" : "obj-83",
