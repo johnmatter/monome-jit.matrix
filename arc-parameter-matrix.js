@@ -94,7 +94,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
   }
 
   // Set sprite for a parameter
-  setParameterSprite(paramName, channel, spriteIndex) {
+  setParameterSprite(channel, paramName, spriteIndex) {
     if (!this.parameters.has(paramName)) {
       post(`Unknown parameter: ${paramName}\n`);
       return;
@@ -133,7 +133,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
   }
 
   // Configure a parameter's behavior
-  setParameterConfig(paramName, channel, config) {
+  setParameterConfig(channel, paramName, config) {
     if (!this.parameters.has(paramName)) {
       post(`Unknown parameter: ${paramName}\n`);
       return;
@@ -224,7 +224,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
       param.values.fill(normalizedValue);
     }
     
-    this.updateMatrixRow(paramName, channel);
+    this.updateMatrixRow(channel, paramName);
     
     // Find all encoders assigned to this parameter/channel
     const affectedEncoders = this.encoderAssignments
@@ -306,7 +306,8 @@ class ArcParameterMatrix extends MonomeMatrixUI {
               post(`Error getting sprite cell: ${error.message}\n`);
             }
           }
-          buffer[led] = Math.floor(value * 15);  // Scale to 0-15 brightness
+          // Scale to 0-15 brightness and ensure it's within valid range
+          buffer[led] = Math.max(0, Math.min(15, Math.floor(value * 15)));
         }
 
         // Send OSC message to update this ring
@@ -327,7 +328,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
           if (paramChannels && paramChannels.has(channel)) {
             const param = paramChannels.get(channel);
             const avgValue = param.values.reduce((a, b) => a + b, 0) / this.ledsPerRing;
-            outlet(1, i, paramName, channel, avgValue);
+            outlet(1, i, channel, paramName, avgValue);
           }
         }
       }
@@ -364,8 +365,8 @@ class ArcParameterMatrix extends MonomeMatrixUI {
 
       case "setparameterconfig":
         if (args.length >= 4) {
-          const paramName = args[1];
-          const channel = args[2];
+          const channel = args[1];
+          const paramName = args[2];
           const config = {};
           if (args[3] === "continuous") {
             config.isContinuous = true;
@@ -379,7 +380,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
           if (args.length >= 7) {
             config.sensitivity = args[6];
           }
-          this.setParameterConfig(paramName, channel, config);
+          this.setParameterConfig(channel, paramName, config);
           return true;
         }
         break;
@@ -441,7 +442,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
   }
 
   // Update matrix row for a parameter instance
-  updateMatrixRow(paramName, channel) {
+  updateMatrixRow(channel, paramName) {
     const paramChannels = this.parameters.get(paramName);
     if (!paramChannels || !paramChannels.has(channel)) return;
 
