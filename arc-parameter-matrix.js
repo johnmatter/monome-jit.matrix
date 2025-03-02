@@ -541,54 +541,47 @@ class ArcParameterMatrix extends MonomeMatrixUI {
       return;
     }
 
-    // Get current rotation from the previously assigned encoder, if any
+    // Get the current parameter value
+    const newParam = paramChannels.get(channel);
+    const newConfig = newParam.config;
+    const currentValue = newParam.values[0]; // Assuming uniform values
+    
+    // Calculate rotation based on the parameter's current value
     let newRotation = 0;
-    const assignment = this.encoderAssignments[encoderNum];
-    if (assignment && 
-        this.parameters.has(assignment.name) && 
-        this.parameters.get(assignment.name).has(assignment.channel)) {
-      const oldParam = this.parameters.get(assignment.name).get(assignment.channel);
-      const oldConfig = oldParam.config;
-      const newParam = paramChannels.get(channel);
-      const newConfig = newParam.config;
-      
-      // Transfer rotation based on value, considering different parameter types
-      if (newConfig.isContinuous === oldConfig.isContinuous) {
-        // Same type, just transfer rotation
-        newRotation = this.encoderRotations[encoderNum];
-      } else {
-        // Different types, map value appropriately
-        const oldValue = oldParam.values[0]; // Assuming uniform values
-        if (newConfig.isContinuous) {
-          // Bounded -> Continuous
-          newRotation = Math.floor(oldValue * this.ledsPerRing) % this.ledsPerRing;
-        } else {
-          // Continuous -> Bounded
-          const minTicks = Math.floor(newConfig.minAngle * this.ledsPerRing / 360);
-          const maxTicks = Math.floor(newConfig.maxAngle * this.ledsPerRing / 360);
-          const rangeTicks = maxTicks - minTicks;
-          newRotation = minTicks + Math.floor(oldValue * rangeTicks);
-        }
-      }
+    if (newConfig.isContinuous) {
+      newRotation = Math.floor(currentValue * this.ledsPerRing) % this.ledsPerRing;
     } else {
-      // Initialize rotation based on parameter's current value
-      const param = paramChannels.get(channel);
-      const config = param.config;
-      const value = param.values[0]; // Assuming uniform values
-      
-      if (config.isContinuous) {
-        newRotation = Math.floor(value * this.ledsPerRing) % this.ledsPerRing;
-      } else {
-        const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
-        const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
-        const rangeTicks = maxTicks - minTicks;
-        newRotation = minTicks + Math.floor(value * rangeTicks);
-      }
+      const minTicks = Math.floor(newConfig.minAngle * this.ledsPerRing / 360);
+      const maxTicks = Math.floor(newConfig.maxAngle * this.ledsPerRing / 360);
+      const rangeTicks = maxTicks - minTicks;
+      newRotation = minTicks + Math.floor(currentValue * rangeTicks);
     }
     
+    // Update the encoder rotation to match the parameter value
     this.encoderRotations[encoderNum] = newRotation;
+    
+    // Update the encoder assignment
     this.encoderAssignments[encoderNum] = { name: paramName, channel };
-    this.redraw([encoderNum]);
+    
+    // Update any other encoders assigned to the same parameter
+    const affectedEncoders = this.encoderAssignments
+      .map((assignment, index) => 
+        assignment && 
+        assignment.name === paramName && 
+        assignment.channel === channel &&
+        index !== encoderNum ? index : null)
+      .filter(index => index !== null);
+      
+    for (const otherEncoderNum of affectedEncoders) {
+      this.encoderRotations[otherEncoderNum] = newRotation;
+    }
+    
+    // Redraw this encoder and any others affected
+    if (affectedEncoders.length > 0) {
+      this.redraw([encoderNum, ...affectedEncoders]);
+    } else {
+      this.redraw([encoderNum]);
+    }
   }
 }
 
