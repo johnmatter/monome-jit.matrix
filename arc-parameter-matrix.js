@@ -213,14 +213,41 @@ class ArcParameterMatrix extends MonomeMatrixUI {
 
     // Update parameter value
     if (config.isContinuous) {
-      const normalizedValue = (this.encoderRotations[encoderNum] % this.ledsPerRing) / this.ledsPerRing;
+      let normalizedValue = (this.encoderRotations[encoderNum] % this.ledsPerRing) / this.ledsPerRing;
+      // Check for NaN and fix if needed
+      if (isNaN(normalizedValue)) {
+        if (this.debug) {
+          post(`Warning: NaN detected in normalizedValue (continuous mode), defaulting to 0\n`);
+        }
+        normalizedValue = 0;
+      }
       param.values.fill(normalizedValue);
     } else {
       const minTicks = Math.floor(config.minAngle * this.ledsPerRing / 360);
       const maxTicks = Math.floor(config.maxAngle * this.ledsPerRing / 360);
-      const normalizedValue = Math.max(0, Math.min(1, 
-        (this.encoderRotations[encoderNum] - minTicks) / (maxTicks - minTicks)
-      ));
+      
+      // Prevent division by zero
+      const range = maxTicks - minTicks;
+      let normalizedValue = 0;
+      
+      if (range <= 0) {
+        if (this.debug) {
+          post(`Warning: Invalid range for bounded encoder (${minTicks} to ${maxTicks}), defaulting to 0\n`);
+        }
+      } else {
+        normalizedValue = Math.max(0, Math.min(1, 
+          (this.encoderRotations[encoderNum] - minTicks) / range
+        ));
+        
+        // Check for NaN
+        if (isNaN(normalizedValue)) {
+          if (this.debug) {
+            post(`Warning: NaN detected in normalizedValue (bounded mode), defaulting to 0\n`);
+          }
+          normalizedValue = 0;
+        }
+      }
+      
       param.values.fill(normalizedValue);
     }
     
@@ -287,8 +314,8 @@ class ArcParameterMatrix extends MonomeMatrixUI {
         }
         
         const param = paramChannels.get(channel);
-        const spriteIndex = param.spriteIndex;
-        const rotation = this.encoderRotations[ringIndex];
+        const spriteIndex = param.spriteIndex || 0; // Default to 0 if undefined
+        const rotation = this.encoderRotations[ringIndex] || 0; // Default to 0 if undefined
 
         // Copy sprite data with rotation
         for (let led = 0; led < this.ledsPerRing; led++) {
@@ -298,8 +325,10 @@ class ArcParameterMatrix extends MonomeMatrixUI {
           let value = 0;
           try {
             const cell = this.spriteSheet.getcell(srcLed, spriteIndex);
-            if (cell && cell[0] !== undefined) {
+            if (cell && cell[0] !== undefined && !isNaN(cell[0])) {
               value = cell[0];
+            } else if (this.debug && (cell && isNaN(cell[0]))) {
+              post(`Warning: NaN value in sprite sheet at (${srcLed}, ${spriteIndex})\n`);
             }
           } catch (error) {
             if (this.debug) {
@@ -307,7 +336,19 @@ class ArcParameterMatrix extends MonomeMatrixUI {
             }
           }
           // Scale to 0-15 brightness and ensure it's within valid range
-          buffer[led] = Math.max(0, Math.min(15, Math.floor(value * 15)));
+          const scaledValue = Math.max(0, Math.min(15, Math.floor(value * 15)));
+          
+          // Final NaN check
+          buffer[led] = isNaN(scaledValue) ? 0 : scaledValue;
+        }
+
+        // Verify no NaN values in buffer before sending
+        const hasNaN = buffer.some(val => isNaN(val));
+        if (hasNaN) {
+          if (this.debug) {
+            post(`Warning: NaN values detected in LED buffer for ring ${ringIndex}, setting to zeros\n`);
+          }
+          buffer.fill(0);
         }
 
         // Send OSC message to update this ring
@@ -327,7 +368,27 @@ class ArcParameterMatrix extends MonomeMatrixUI {
           const paramChannels = this.parameters.get(paramName);
           if (paramChannels && paramChannels.has(channel)) {
             const param = paramChannels.get(channel);
-            const avgValue = param.values.reduce((a, b) => a + b, 0) / this.ledsPerRing;
+            
+            // Safely calculate average value
+            let avgValue = 0;
+            if (param.values && param.values.length > 0) {
+              const sum = param.values.reduce((a, b) => {
+                // Handle NaN values in the reduction
+                if (isNaN(a)) a = 0;
+                if (isNaN(b)) b = 0;
+                return a + b;
+              }, 0);
+              avgValue = sum / Math.max(1, param.values.length); // Avoid division by zero
+              
+              // Final NaN check
+              if (isNaN(avgValue)) {
+                if (this.debug) {
+                  post(`Warning: NaN detected in average value for parameter ${paramName}, channel ${channel}\n`);
+                }
+                avgValue = 0;
+              }
+            }
+            
             outlet(1, i, channel, paramName, avgValue);
           }
         }
@@ -378,6 +439,7 @@ class ArcParameterMatrix extends MonomeMatrixUI {
             }
           }
           if (args.length >= 7) {
+            post(`Setting sensitivity for ${paramName} on channel ${channel} to ${args[6]}\n`);
             config.sensitivity = args[6];
           }
           this.setParameterConfig(channel, paramName, config);
