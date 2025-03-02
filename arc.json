@@ -1,0 +1,33 @@
+{
+  "channels": {
+    "1": {
+      "parameters": {
+        "a": {
+          "config": {
+            "isContinuous": true,
+            "sensitivity": 1.0,
+            "spriteIndex": 0
+          }
+        },
+        "b": {
+          "config": {
+            "isContinuous": false,
+            "minAngle": -90,
+            "maxAngle": 90,
+            "spriteIndex": 1
+          }
+        }
+      }
+    },
+    "2": {
+      "parameters": {
+        "a": {
+          "config": {
+            "spriteIndex": 2
+          }
+        }
+      }
+    }
+  },
+  "preserveEncoderAssignments": false
+}
